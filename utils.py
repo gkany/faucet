@@ -11,10 +11,10 @@ import requests
 
 class SubFormatter(logging.Formatter):
     converter=dt.datetime.fromtimestamp
-    def formatTime(self, record, datefmt=None):
+    def formatTime(self, record, dateFmt=None):
         ct = self.converter(record.created)
-        if datefmt:
-            s = ct.strftime(datefmt)
+        if dateFmt:
+            s = ct.strftime(dateFmt)
         else:
             t = ct.strftime("%Y-%m-%d %H:%M:%S")
             s = "%s,%03d" % (t, record.msecs)
@@ -25,7 +25,7 @@ class Logging(object):
         self.logger = logging.getLogger(log_name)
         self.logger.setLevel(logging.DEBUG)
         #formatter = logging.Formatter("%(asctime)s [%(name)s] [%(funcName)s:%(lineno)s] [%(levelname)s]: %(message)s", "%Y-%m-%d %H:%M:%S")
-        formatter = SubFormatter(fmt='%(asctime)s [%(name)s] [%(funcName)s:%(lineno)s] [%(levelname)s]: %(message)s', datefmt='%Y-%m-%d %H:%M:%S.%f')
+        formatter = SubFormatter(fmt='%(asctime)s [%(name)s] [%(funcName)s:%(lineno)s] [%(levelname)s]: %(message)s', dateFmt='%Y-%m-%d %H:%M:%S.%f')
 
         # file handler
         if not os.path.exists(log_dir):
@@ -128,4 +128,11 @@ def is_cheap_name(name):
     if not has_spacial_char:
         return True
     return False
-    
+
+
+# status: 1~3 retry
+g_reward_retry_count = 3
+g_reward_status = {
+    "NOT_REWARD": 0,
+    "SUCCESS": g_reward_retry_count+1,
+}

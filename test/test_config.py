@@ -6,30 +6,28 @@ auth_list = {
 }
 
 #命令行钱包地址
-# cli_wallet_url = "http://127.0.0.1:8048"
-cli_wallet_url = "http://172.17.25.178:8048"
+cli_wallet_url = "http://127.0.0.1:8048"
 
 #请求头
 headers = {"content-type": "application/json"}
 
-# testnet | prod
-env = "prod"
+# test | prod
+env = "local-test"
 g_hostname = "localhost"
 g_ip = "127.0.0.1"
 
 #注册帐户的注册人
-# faucet1 1.2.18 faucet2 1.2.19 faucet3 1.2.20 faucet4 1.2.21
-register = "faucet1"
-register_id = "1.2.18"
+register = "nicotest"
+register_id = "1.2.16" 
 
 #mysql数据库相关参数
-db = {
-    'host': 'xxxx',
+db = { 
+    'host': '127.0.0.1',
     'port': 3306,
-    'user': 'faucet',
-    'password': 'xxxx',
+    'user': 'root',
+    'password': '123456',
     'charset': 'utf8',
-    'db': 'CocosBCX'
+    'db': 'cocosbcx'
 }
 
 tables = { 
@@ -38,8 +36,10 @@ tables = {
 
 #数据库操作相关语句
 sql = {
-    'createTable': 'CREATE TABLE IF NOT EXISTS ' + tables['users'] + ' (id char(10), name varchar(32), pubkey char(128), ip char(32), create_time char(32), status TINYINT default 0, register varchar(32) DEFAULT NULL)default charset=utf8',
-    'insertData': "INSERT INTO " + tables['users'] + " (id, name, pubkey, ip, create_time, register) VALUES('{}','{}','{}','{}','{}','{}')"
+    'createTable': 'create table If Not Exists ' + tables['users'] + ' (id char(10), name varchar(32), pubkey char(128), ip char(32), create_time char(32))default charset=utf8',
+    'insertData': "insert into " + tables['users'] + " (id, name, pubkey, ip, create_time) values('{}','{}','{}','{}','{}')",
+    'count': "select * from " + tables['users'] + " where DATE_FORMAT(create_time, '%Y-%m-%d') between '{}' and '{}'",
+    'ip_count': "select * from " + tables['users'] + " where ip='{}' and DATE_FORMAT(create_time, '%Y-%m-%d')='{}' "
 }
 
 #核心资产
@@ -51,8 +51,7 @@ asset_gas = 'GAS'
 gas_core_exchange_rate = 1
 
 #发送奖励数量
-# testnet临时测试 100000
-reward_core = 0.1 
+reward_core = 100000 
 reward_core_until_N = 1000
 transfer_operation_N = 2
 #reward_gas = reward_core * (10 ** asset_core_precision) * gas_core_exchange_rate * transfer_operation_N
@@ -74,5 +73,5 @@ ip_limit_list = set()
 #ip_limit_list.add("127.0.0.1")
 
 # dingding
-access_token = "xxxx"
+access_token = "ddf5792a6a4ddc5117026dfc7f90b14e22584b7ecf72a66f4ddf45506fa076f7"
 faucet_alert_address = "https://oapi.dingtalk.com/robot/send?access_token=" + access_token
