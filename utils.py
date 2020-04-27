@@ -9,6 +9,7 @@ from logging.handlers import TimedRotatingFileHandler
 from config import *
 import requests
 
+'''
 class SubFormatter(logging.Formatter):
     converter=dt.datetime.fromtimestamp
     def formatTime(self, record, datefmt=None):
@@ -51,6 +52,7 @@ class Logging(object):
     def getLogger(self):
         return self.logger
 
+'''
 
 def response_module(code, msg="", data={}):
     return {"code": code, "msg": msg, "data": data}

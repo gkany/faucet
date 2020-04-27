@@ -8,190 +8,21 @@ import requests
 import datetime
 import time
 import socket
-import tornado.ioloop, tornado.web, tornado.httpserver
-import logging
 
 from config import *
 from utils import *
 from threading import Thread
+
+import tornado.ioloop, tornado.web, tornado.httpserver
 from tornado.options import define, options, parse_command_line
 
-from PythonMiddleware.graphene import Graphene
-from PythonMiddleware.instance import set_shared_graphene_instance
-from pprint import pprint
-from PythonMiddleware.account import Account
-from PythonMiddleware.asset import Asset
-from PythonMiddleware.storage import configStorage as config
+from logger import logger
+from pysdk import gph, get_account, get_account_balance, create_account, transfer, update_collateral_for_gas
+from initial import initialize
+from alarm import push_message
+from db import connection_pool
 
-define('port', default=server_port, type=int)
-
-logger = Logging(console=False, level=logging.DEBUG).getLogger()
-
-gph = Graphene(node=node_address, blocking=True)
-set_shared_graphene_instance(gph)
-
-def get_account(name):
-    try:
-        account = Account(name)
-        return account
-    except Exception as e:
-        logger.error('name {}, error: {}'.format(name, repr(e)))
-        return None
-
-def create_account(name, owner_key, active_key, memo_key, registrar):
-    try:
-        response = gph.create_account(account_name=name, registrar=registrar,
-                           owner_key=owner_key, active_key=active_key, memo_key=memo_key)
-        logger.debug(response)
-    except Exception as e:
-        logger.error('name {}, error: {}'.format(name, repr(e)))
-        return False
-    return True
-
-def transfer(from_account, to, amount, asset="1.3.0", memo=""):
-    try:
-        response = gph.transfer(to=to, amount=amount, asset=asset, memo=[memo,0], account=from_account)
-        logger.debug(response)
-    except Exception as e:
-        logger.error('to {}, amount: {}, error: {}'.format(to, amount, repr(e)))
-        return False
-    return True
-
-def update_collateral_for_gas(from_account, beneficiary, collateral):
-    try:
-        response = gph.update_collateral_for_gas(beneficiary=beneficiary, collateral=collateral,
-                account=from_account)
-        logger.debug(response)
-    except Exception as e:
-        logger.error('beneficiary {}, collateral: {}, error: {}'.format(beneficiary, collateral, repr(e)))
-        return False
-    return True
-
-def get_account_balance(name, symbol):
-    try:
-        account = get_account(name)
-        if account is None:
-            return None
-        else:
-            balance = account.balance(symbol)
-            return balance
-    except Exception as e:
-        logger.error('name {}, symbol {}, error: {}'.format(name, symbol, repr(e)))
-        return None
-
-def get_asset(symbol):
-    try:
-        asset = Asset(symbol)
-        return asset
-    except Exception as e:
-        logger.error('symbol {}, error: {}'.format(symbol, repr(e)))
-        return None
-
-def init_wallet():
-    try:
-        if not gph.wallet.created():
-            gph.newWallet(wallet_password)
-        logger.info("wallet create status: {}".format(gph.wallet.created()))
-
-        if gph.wallet.locked():
-            gph.wallet.unlock(wallet_password)
-        logger.info("wallet lock status: {}".format(gph.wallet.locked()))
-
-        if gph.wallet.getPrivateKeyForPublicKey(register_public_key) is None:
-            logger.info("import private key into wallet. public key: {}".format(register_public_key))
-            gph.wallet.addPrivateKey(register_private_key)
-
-        logger.info("account id: {}, public key: {}".format(
-            gph.wallet.getAccountFromPublicKey(register_public_key), register_public_key))
-
-        config["default_prefix"] = gph.rpc.chain_params["prefix"]
-        config["default_account"] = register
-    except Exception as e:
-        print(repr(e))
-
-def init_reward():
-    global asset_core_precision, core_exchange_rate, reward_gas
-    global gas_core_exchange_rate, register_id, asset_gas_precision
-
-    try:
-        properties = gph.rpc.get_object("2.0.0")
-        transfer_fee = properties['parameters']['current_fees']['parameters'][0]
-        if transfer_fee[0] == 0:
-            logger.info("asset {}".format(asset_core))
-            asset = get_asset(asset_core)
-            asset_core_precision = asset['precision']
-            logger.info("asset {} precision: {}".format(asset_core, asset_core_precision))
-
-            logger.info("asset {}".format(asset_gas))
-            asset = get_asset(asset_gas)
-            asset_gas_precision = asset['precision']
-            core_exchange_rate = asset['options']['core_exchange_rate']
-            gas_core_exchange_rate = round(core_exchange_rate['quote']['amount']/core_exchange_rate['base']['amount'])
-            logger.info("asset {} precision: {}, gas_exchange_rate: {}".format(asset_gas,
-                asset_gas_precision, gas_core_exchange_rate))
-            reward_gas = transfer_fee[1]['fee'] * gas_core_exchange_rate * transfer_operation_N
-
-            logger.info("init register({}) account id".format(register))
-            register_account = get_account(register)
-            if register_account:
-                register_id = register_account["id"]
-            else:
-                logger.error("get_account {} failed".format(register))
-            logger.info('register:{}, id:{}, gas rate:{}, reward_gas:{}, reward_core:{}, transfer fee:{}'.format(
-                register, register_id, gas_core_exchange_rate, reward_gas, reward_core, transfer_fee))
-    except Exception as e:
-        logger.error('init failed. error: {}'.format(repr(e)))
-        push_message("init reward error")
-
-def init_database():
-    my_db = pymysql.connect(**db)
-    cursor = my_db.cursor()
-    try:
-        cursor.execute(sql["create_table"])
-        my_db.commit()
-    except Exception as e:
-        my_db.rollback()
-        logger.warn('init failed. error: {}'.format(repr(e)))
-    my_db.close()
-
-def init_host_info():
-    global g_hostname, g_ip
-    try:
-        g_hostname = socket.getfqdn(socket.gethostname())
-        g_ip = socket.gethostbyname(g_hostname)
-    except Exception as e:
-        logger.warn('init host info. error: {}'.format(repr(e)))
-    if 'HOST_NAME' in os.environ:
-        g_hostname = os.environ['HOST_NAME']
-    logger.info('hostname: {}, ip: {}'.format(g_hostname, g_ip))
-
-def initialize():
-    logger.info("init wallet")
-    init_wallet()
-    logger.info("init host info")
-    init_host_info()
-    logger.info("init database")
-    init_database()
-    logger.info("init reward")
-    init_reward()
-    logger.info('ip_limit_list: {}'.format(ip_limit_list))
-    logger.info('init done.')
-
-def push_message(message, labels=['faucet']):
-    content = "[{}]{} {}, {}".format(env, str(labels), g_hostname, message)
-    logger.debug('push content: {}'.format(content))
-    return    # no need
-
-    try:
-        body_relay = {
-            "jsonrpc": "2.0",
-            "msgtype": "text",
-            "text": { "content": content },
-            "id":1
-        }
-        json.loads(requests.post(faucet_alert_address, data = json.dumps(body_relay), headers = headers).text)
-    except Exception as e:
-        logger.error('push error. {}'.format(repr(e)))
+define('port', default=8041, type=int)
 
 def params_valid(account):
     logger.info('account: {}'.format(account))
@@ -227,7 +58,7 @@ def send_reward_transfer(account_name, memo=memo):
             if status:
                 return True
             else:
-                message = '{} {} failed.'.format(body_relay['method'], body_relay['params'])
+                message = 'transfer to {} failed.'.format(account_name)
                 logger.warn(message)
         else:
             message = 'register {} no enough {}({}), reward need {}'.format(
@@ -250,7 +81,7 @@ def send_reward_gas(account_id):
             if status:
                 return True
             else:
-                message = '{} {} failed.'.format(body_relay['method'], body_relay['params'])
+                message = 'update_collateral_for_gas to {} failed.'.format(account_id)
                 logger.warn(message)
         else:
             message = 'register {} no enough {}({}), collateral need {}'.format(
@@ -261,8 +92,8 @@ def send_reward_gas(account_id):
         logger.error('{}, error: {}'.format(message, repr(e)))
     return False
 
-def send_reward(core_count, account_id, account_name):
-    if core_count < reward_core_until_N:
+def send_reward(core_asset_transfer_count, account_id, account_name):
+    if core_asset_transfer_count < reward_core_until_N:
         transfer_status = send_reward_transfer(account_name)
     else:
         transfer_status = False
@@ -291,95 +122,84 @@ def register_account(account):
     return True, "", account_id
 
 def account_count_check(ip, date):
-    my_db = pymysql.connect(**db)
-    cursor = my_db.cursor()
+    with connection_pool(db_config).cursor() as cursor:
+        try:
+            # Daily Max
+            query_sql = "SELECT COUNT(id) AS count FROM {} WHERE DATE_FORMAT(create_time, '%Y-%m-%d')='{}'".format(
+                tables['users'], date)
+            cursor.execute(query_sql)
+            daily_result = cursor.fetchone()
+            logger.debug('ip: {}, date: {}, fetch result: {}. max_limit: {}'.format(ip, date, daily_result, registrar_account_max))
+            if has_account_max_limit and daily_result["count"] > registrar_account_max:
+                return False, response_dict['forbidden_today_max'], 0
 
-    try:
-        query_sql = "SELECT COUNT(id) FROM {} WHERE DATE_FORMAT(create_time, '%Y-%m-%d')='{}'".format(
-            tables['users'], date)
-        cursor.execute(query_sql)
-        count = cursor.fetchone()[0]
-        logger.debug('ip: {}, date: {}, count: {}. max_limit: {}'.format(ip, date, count, registrar_account_max))
-        if has_account_max_limit and count > registrar_account_max:
-            my_db.close()
-            return False, response_dict['forbidden_today_max'], 0
-
-        #ip max register check
-        query_sql = "SELECT count(id) FROM {} WHERE ip='{}' AND DATE_FORMAT(create_time, '%Y-%m-%d')='{}'".format(
-            tables['users'], ip, date)
-        cursor.execute(query_sql)
-        this_ip_count = cursor.fetchone()[0]
-
-        logger.debug('this_ip_count: {}, ip_max_limit: {}'.format(this_ip_count, ip_max_register_limit))
-        if has_ip_max_limit and this_ip_count > ip_max_register_limit:
-            my_db.close()
-            return False, response_dict['forbidden_ip_max'], 0
-    except Exception as e:
-        my_db.close()
-        logger.error('db failed. ip: {}, error: {}'.format(ip, repr(e)))
-        return False, response_dict['server_error'], 0
-    my_db.close()
-    return True, '', count
+            #ip max register check
+            query_sql = "SELECT count(id) AS count FROM {} WHERE ip='{}' AND DATE_FORMAT(create_time, '%Y-%m-%d')='{}'".format(
+                tables['users'], ip, date)
+            cursor.execute(query_sql)
+            single_account_result = cursor.fetchone()
+            logger.debug('fetch result: {}, ip_max_limit: {}'.format(single_account_result, ip_max_register_limit))
+            if has_ip_max_limit and single_account_result["count"] > ip_max_register_limit:
+                return False, response_dict['forbidden_ip_max'], 0
+        except Exception as e:
+            logger.error('db failed. ip: {}, error: {}'.format(ip, repr(e)))
+            return False, response_dict['server_error'], 0
+        return True, '', daily_result["count"]
 
 def store_new_account(data):
-    my_db = pymysql.connect(**db)
-    cursor = my_db.cursor()
-
-    try:
-        create_time = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-        cursor.execute(sql['create_account'].format(data['id'], data['name'], data['active_key'], data['ip'], create_time, register))
-        my_db.commit()
-    except Exception as e:
-        my_db.rollback()
-        logger.error('execute create_account sql failed. data: {}, error: {}'.format(data, repr(e)))
-    finally:
-        my_db.close()
+    with connection_pool(db_config).cursor() as cursor:
+        try:
+            create_time = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+            cursor.execute(sql['create_account'].format(data['id'], data['name'], data['active_key'], data['ip'], create_time, register))
+            # cursor.commit()
+        except Exception as e:
+            logger.error('execute create_account sql failed. data: {}, error: {}'.format(data, repr(e)))
 
 def time_str_to_stamp(str_time):
     return int(time.mktime(time.strptime(str_time, "%Y-%m-%d %H:%M:%S")))
 
 def reward():
     while True:
-        my_db = pymysql.connect(**db)
-        cursor = my_db.cursor()
-        try:
-            today = datetime.datetime.utcnow().strftime('%Y-%m-%d')
-            query_sql = "SELECT COUNT(id) FROM {} WHERE status={} AND DATE_FORMAT(create_time, '%Y-%m-%d')='{}'".format(
-                tables['users'], g_reward_status["SUCCESS"], today)
-            cursor.execute(query_sql)
-            count = cursor.fetchone()[0]
+        with connection_pool(db_config).cursor() as cursor:
+            try:
+                today = datetime.datetime.utcnow().strftime('%Y-%m-%d')
+                query_sql = "SELECT COUNT(id) AS count FROM {} WHERE status={} AND DATE_FORMAT(create_time, '%Y-%m-%d')='{}'".format(
+                    tables['users'], g_reward_status["SUCCESS"], today)
+                # logger.debug(query_sql)
+                cursor.execute(query_sql)
+                core_asset_transfer_count = cursor.fetchone()["count"]
+                # core_asset_transfer_count = result["count"]
 
-            str_time = (datetime.datetime.utcnow()-datetime.timedelta(seconds=6)).strftime("%Y-%m-%d %H:%M:%S")
-            before_seconds_stamp = time_str_to_stamp(str_time)
-            query_sql = "SELECT account_id, name, status, create_time FROM {} WHERE status < {} AND register='{}' AND DATE_FORMAT(create_time, '%Y-%m-%d')='{}'".format(
-                tables['users'], g_reward_retry_count, register, today)
-            cursor.execute(query_sql)
-            results = cursor.fetchall()
-            for result in results:
-                account_name = result[1]
-                status = result[2]
-                create_time_stamp = time_str_to_stamp(result[3])
-                account_info = get_account(account_name)
-                if account_info and create_time_stamp < before_seconds_stamp:
-                    account_id = account_info["id"]
-                    reward_status = send_reward(count, account_id, account_name)
-                    if account_id != result[0]:
-                        logger.info('name: {}, status: {}, id: {} -> {}, reward_status: {}, create_time_stamp: {}, before seconds: {}'.format(
-                        account_name, status, result[0], account_id, reward_status, create_time_stamp, before_seconds_stamp))
-                    if reward_status != -1:
-                        if reward_status == 0:
-                            status = 4 #success
-                        else:
-                            status = status + 1 #failed +1
-                        update_sql = "UPDATE {} SET STATUS='{}', account_id='{}' WHERE register='{}' AND name='{}' ".format(
-                            tables['users'], status, account_id, register, account_name)
-                        cursor.execute(update_sql)
-                        my_db.commit()
-        except Exception as e:
-            my_db.rollback()
-            logger.error('reward exception. {}'.format(repr(e)))
-        finally:
-            my_db.close()
+                str_time = (datetime.datetime.utcnow()-datetime.timedelta(seconds=6)).strftime("%Y-%m-%d %H:%M:%S")
+                before_seconds_stamp = time_str_to_stamp(str_time)
+                query_sql = "SELECT account_id, name, status, create_time FROM {} WHERE status < {} AND register='{}' AND DATE_FORMAT(create_time, '%Y-%m-%d')='{}'".format(
+                    tables['users'], g_reward_retry_count, register, today)
+                # logger.debug(query_sql)
+                cursor.execute(query_sql)
+                results = cursor.fetchall()
+                # logger.debug(results)
+                for result in results:
+                    account_name = result["name"]
+                    status = result["status"]
+                    create_time_stamp = time_str_to_stamp(result["create_time"])
+                    account_info = get_account(account_name)
+                    if account_info and create_time_stamp < before_seconds_stamp:
+                        account_id = account_info["id"]
+                        reward_status = send_reward(core_asset_transfer_count, account_id, account_name)
+                        if account_id != result["account_id"]:
+                            logger.info('name: {}, status: {}, id: {} -> {}, reward_status: {}, create_time_stamp: {}, before seconds: {}'.format(
+                            account_name, status, result["account_id"], account_id, reward_status, create_time_stamp, before_seconds_stamp))
+                        if reward_status != -1:
+                            if reward_status == 0:
+                                status = 4 #success
+                            else:
+                                status = status + 1 #failed +1
+                            update_sql = "UPDATE {} SET STATUS='{}', account_id='{}' WHERE register='{}' AND name='{}' ".format(
+                                tables['users'], status, account_id, register, account_name)
+                            cursor.execute(update_sql)
+                            # cursor.commit()
+            except Exception as e:
+                logger.error('reward exception. {}'.format(repr(e)))
         time.sleep(5)
 
 class FaucetHandler(tornado.web.RequestHandler):

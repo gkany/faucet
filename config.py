@@ -4,9 +4,7 @@ auth_list = {
     'origon': 'YnVmZW5nQDIwMThidWZlbmc='
 }
 
-server_port = 8041
-
-node_address = "wss://api.cocosbcx.net"
+node_address = "ws://127.0.0.1:8049"
 wallet_password = "123456"
 
 headers = {"content-type": "application/json"}
@@ -17,19 +15,28 @@ env = "prod"
 g_hostname = "localhost"
 g_ip = "127.0.0.1"
 
-register = "register-test1"
+register = "nicotest"
 register_id = "1.2.18"
-register_private_key = "5J2SChqadMor9VC2k9NT4Rskfdaslqjabfjafhokna"
-register_public_key = "COCOS56dTnfGpuPoWACnYj65dahcXMpTrNQkV3hHALfsaAnpJl5mXsa"
+register_private_key = "5J2SChqa9QxrCkdMor9VC2k9NT4R4ctRrJA6odQCPkb3yL89vxo"
+register_public_key = "COCOS56a5dTnfGpuPoWACnYj65dahcXMpTrNQkV3hHWCFkLxMF5mXpx"
 
 #mysql数据库相关参数
-db = {
-    'host': '127.0.0.1',
+# db = {
+#     'host': '127.0.0.1',
+#     'port': 3306,
+#     'user': 'root',
+#     'password': '123456',
+#     'charset': 'utf8',
+#     'db': 'cocosbcx'
+# }
+
+db_config = {
+    'pool_name': 'faucet',
+    'host': 'localhost',
     'port': 3306,
     'user': 'root',
     'password': '123456',
-    'charset': 'utf8',
-    'db': 'cocosbcx'
+    'database': 'cocosbcx'
 }
 
 tables = {
