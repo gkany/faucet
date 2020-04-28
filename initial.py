@@ -1,66 +1,46 @@
 # -*- coding:utf-8 -*-
 
 import os
-import pymysql
+import socket
 
+from sql import sql
 from logger import logger
-from pysdk import gph
 from alarm import push_message
-from config import *
 from db import connection_pool
-
-def init_wallet():
-    try:
-        if not gph.wallet.created():
-            gph.newWallet(wallet_password)
-        logger.info("wallet create status: {}".format(gph.wallet.created()))
-
-        if gph.wallet.locked():
-            gph.wallet.unlock(wallet_password)
-        logger.info("wallet lock status: {}".format(gph.wallet.locked()))
-
-        if gph.wallet.getPrivateKeyForPublicKey(register_public_key) is None:
-            logger.info("import private key into wallet. public key: {}".format(register_public_key))
-            gph.wallet.addPrivateKey(register_private_key)
-
-        logger.info("account id: {}, public key: {}".format(
-            gph.wallet.getAccountFromPublicKey(register_public_key), register_public_key))
-
-        config["default_prefix"] = gph.rpc.chain_params["prefix"]
-        config["default_account"] = register
-    except Exception as e:
-        print(repr(e))
+from pysdk import gph, get_asset, get_account, init_wallet
+from config import register, db_config, limit_config as limit, reward_config, asset_config
 
 def init_reward():
-    global asset_core_precision, core_exchange_rate, reward_gas
-    global gas_core_exchange_rate, register_id, asset_gas_precision
-
     try:
         properties = gph.rpc.get_object("2.0.0")
         transfer_fee = properties['parameters']['current_fees']['parameters'][0]
         if transfer_fee[0] == 0:
-            logger.info("asset {}".format(asset_core))
-            asset = get_asset(asset_core)
-            asset_core_precision = asset['precision']
-            logger.info("asset {} precision: {}".format(asset_core, asset_core_precision))
+            core_asset = asset_config["core_asset"]
+            asset = get_asset(core_asset["symbol"])
+            asset_config["core_asset"]["precision"] = asset['precision']
 
-            logger.info("asset {}".format(asset_gas))
-            asset = get_asset(asset_gas)
-            asset_gas_precision = asset['precision']
+            gas_asset = asset_config["gas_asset"]
+            reward_gas = reward_config["gas_asset"]
+            asset = get_asset(gas_asset["symbol"])
+            logger.info("asset: {}, reward: {}".format(asset_config, reward_config))
+            asset_config["gas_asset"]["precision"] = asset['precision']
             core_exchange_rate = asset['options']['core_exchange_rate']
-            gas_core_exchange_rate = round(core_exchange_rate['quote']['amount']/core_exchange_rate['base']['amount'])
-            logger.info("asset {} precision: {}, gas_exchange_rate: {}".format(asset_gas,
-                asset_gas_precision, gas_core_exchange_rate))
-            reward_gas = transfer_fee[1]['fee'] * gas_core_exchange_rate * transfer_operation_N
+            logger.info("core_exchange_rate: {}".format(core_exchange_rate))
 
-            logger.info("init register({}) account id".format(register))
-            register_account = get_account(register)
+            qute_amount = core_exchange_rate['quote']['amount']
+            base_amount = core_exchange_rate['base']['amount']
+            exchange_rate = round(qute_amount/base_amount)
+            asset_config["gas_asset"]["exchange_rate"] = exchange_rate
+            reward_config["gas_asset"]["amount"] = transfer_fee[1]['fee']*exchange_rate*reward_gas["NTransfer"]
+
+            logger.info("init register({}) account id".format(register["name"]))
+            register_account = get_account(register["name"])
             if register_account:
-                register_id = register_account["id"]
+                register["id"] = register_account["id"]
             else:
-                logger.error("get_account {} failed".format(register))
-            logger.info('register:{}, id:{}, gas rate:{}, reward_gas:{}, reward_core:{}, transfer fee:{}'.format(
-                register, register_id, gas_core_exchange_rate, reward_gas, reward_core, transfer_fee))
+                logger.error("get_account {} failed".format(register["name"]))
+            logger.info('register:{}, id:{}, reward config:{}, transfer fee:{}, asset config: {}'.format(register["name"],
+                register["id"], reward_config, transfer_fee, asset_config))
     except Exception as e:
         logger.error('init failed. error: {}'.format(repr(e)))
         push_message("init reward error")
@@ -68,8 +48,7 @@ def init_reward():
 def init_database():
     with connection_pool(db_config).cursor() as cursor:
         try:
-            cursor.execute(sql["create_table"])
-            # cursor.commit()
+            cursor.execute(sql["createTable"])
         except Exception as e:
             logger.warn('init failed. error: {}'.format(repr(e)))
 
@@ -93,5 +72,5 @@ def initialize():
     init_database()
     logger.info("init reward")
     init_reward()
-    logger.info('ip_limit_list: {}'.format(ip_limit_list))
+    logger.info('ip blacklist: {}'.format(limit["blacklist"]))
     logger.info('init done.')

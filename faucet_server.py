@@ -3,29 +3,27 @@
 import os
 import json
 import random
-import pymysql
 import requests
 import datetime
 import time
-import socket
 
-from config import *
-from utils import *
 from threading import Thread
-
 import tornado.ioloop, tornado.web, tornado.httpserver
 from tornado.options import define, options, parse_command_line
 
+from utils import *
+from sql import sql
 from logger import logger
-from pysdk import gph, get_account, get_account_balance, create_account, transfer, update_collateral_for_gas
 from initial import initialize
 from alarm import push_message
 from db import connection_pool
+from config import (register, default_memo, asset_config, limit_config, db_config, auth_list, reward_config)
+from pysdk import gph, get_account, get_account_balance, create_account, transfer, update_collateral_for_gas
 
 define('port', default=8041, type=int)
 
-def params_valid(account):
-    logger.info('account: {}'.format(account))
+def request_params_check(account):
+    logger.debug("account: {}".format(account))
     name = account.get('name', '')
     active_key = account.get('active_key', '')
     owner_key = account.get('owner_key', '')
@@ -41,43 +39,48 @@ def params_valid(account):
         return False, response_dict['bad_request'], {}
     if not owner_key:
         owner_key = active_key
+
     if not is_valid_name(name):
         msg = response_module(response_dict['bad_request']['code'], msg="account {} illegal".format(name))
         return False, msg, {}
     return True, '', {'name': name, 'active_key': active_key, 'owner_key': owner_key}
 
-def send_reward_transfer(account_name, memo=memo):
+def send_reward_core_asset(account_name, memo=default_memo):
+    core_symbol = asset_config["core_asset"]["symbol"]
+    reward_core = reward_config["core_asset"]["amount"]
     try:
-        balance = get_account_balance(register, asset_core)
+        balance = get_account_balance(register["name"], core_symbol)
         if balance is None:
             return False
         core_amount = balance["amount"]
-        logger.debug("{} balance: {} {}".format(register, core_amount, asset_core))
+        logger.debug("{} balance: {} {}".format(register["name"], core_amount, core_symbol))
         if reward_core < core_amount:
-            status = transfer(register, account_name, reward_core, asset_core, memo)
+            status = transfer(register["name"], account_name, reward_core, core_symbol, memo)
             if status:
                 return True
             else:
                 message = 'transfer to {} failed.'.format(account_name)
                 logger.warn(message)
         else:
-            message = 'register {} no enough {}({}), reward need {}'.format(
-                register, asset_core, core_amount/(10**asset_core_precision), reward_core)
-            logger.warn(message)
+            logger.warn('register {} no enough {}({}), reward need {}'.format(register["name"],
+                core_symbol, core_amount, reward_core))
     except Exception as e:
-        message = 'register {} no {}, reward need {}'.format(register, asset_core, reward_core)
+        message = 'register {} no {}, reward need {}'.format(register["name"], core_symbol, reward_core)
         logger.error('{}, error: {}'.format(message, repr(e)))
     return False
 
-def send_reward_gas(account_id):
+def send_reward_gas_asset(account_id):
+    gas_asset = asset_config["gas_asset"]
+    precision = 10**gas_asset["precision"]
+    reward_gas = reward_config["gas_asset"]["amount"]
     try:
-        balance = get_account_balance(register, asset_gas)
+        balance = get_account_balance(register["name"], gas_asset["symbol"])
         if balance is None:
             return False
         gas_amount = balance["amount"]
-        logger.debug("{} balance: {} {}".format(register, gas_amount, asset_gas))
-        if reward_gas/(10**asset_gas_precision) < gas_amount:
-            status = update_collateral_for_gas(register_id, account_id, reward_gas)
+        logger.debug("{} balance: {} {}".format(register["name"], gas_amount, gas_asset["symbol"]))
+        if reward_gas/precision < gas_amount:
+            status = update_collateral_for_gas(register["id"], account_id, reward_gas)
             if status:
                 return True
             else:
@@ -85,28 +88,26 @@ def send_reward_gas(account_id):
                 logger.warn(message)
         else:
             message = 'register {} no enough {}({}), collateral need {}'.format(
-                register, asset_gas, gas_amount, reward_gas/(10**asset_gas_precision))
+                register["name"], gas_asset["symbol"], gas_amount, reward_gas/precision)
             logger.warn(message)
     except Exception as e:
-        message = 'register {} no {}, reward need {}'.format(register, asset_gas, reward_gas/(10**asset_gas_precision))
+        message = 'register {} no {}, reward need {}'.format(register["name"], gas_asset["symbol"],
+            reward_gas/precision)
         logger.error('{}, error: {}'.format(message, repr(e)))
     return False
 
 def send_reward(core_asset_transfer_count, account_id, account_name):
-    if core_asset_transfer_count < reward_core_until_N:
-        transfer_status = send_reward_transfer(account_name)
+    if core_asset_transfer_count < limit_config["daily_max"]["amount"]:
+        transfer_status = send_reward_core_asset(account_name)
     else:
         transfer_status = False
-    collateral_status = send_reward_gas(account_id)
-    if transfer_status or collateral_status:
-        return 0  # success
-    else:
-        return 1  # failed
+    collateral_status = send_reward_gas_asset(account_id)
+    return (transfer_status or collateral_status)
 
 def register_account(account):
     try:
         status = create_account(account['name'], account['owner_key'], account['active_key'],
-                                account['active_key'], register)
+                                account['active_key'], register["name"])
         if not status:
             return False, "register account failed", ''
     except Exception as e:
@@ -121,85 +122,73 @@ def register_account(account):
         logger.error('get account failed. account: {}, error: {}'.format(account, repr(e)))
     return True, "", account_id
 
-def account_count_check(ip, date):
-    with connection_pool(db_config).cursor() as cursor:
-        try:
-            # Daily Max
-            query_sql = "SELECT COUNT(id) AS count FROM {} WHERE DATE_FORMAT(create_time, '%Y-%m-%d')='{}'".format(
-                tables['users'], date)
-            cursor.execute(query_sql)
-            daily_result = cursor.fetchone()
-            logger.debug('ip: {}, date: {}, fetch result: {}. max_limit: {}'.format(ip, date, daily_result, registrar_account_max))
-            if has_account_max_limit and daily_result["count"] > registrar_account_max:
-                return False, response_dict['forbidden_today_max'], 0
+def register_check(ip):
+    try:
+        with connection_pool(db_config).cursor() as cursor:
+            daily_max = limit_config["daily_max"]
+            today = datetime.datetime.utcnow().strftime('%Y-%m-%d')
+            if daily_max["enable"]:
+                cursor.execute(sql["dailyCountQuery"].format(today))
+                daily_result = cursor.fetchone()
+                logger.debug('ip:{}, date:{}, fetch result:{}. max_limit:{}'.format(ip, today, daily_result, daily_max))
+                if daily_result["count"] > daily_max["amount"]:
+                    return False, response_dict['forbidden_today_max']
 
-            #ip max register check
-            query_sql = "SELECT count(id) AS count FROM {} WHERE ip='{}' AND DATE_FORMAT(create_time, '%Y-%m-%d')='{}'".format(
-                tables['users'], ip, date)
-            cursor.execute(query_sql)
-            single_account_result = cursor.fetchone()
-            logger.debug('fetch result: {}, ip_max_limit: {}'.format(single_account_result, ip_max_register_limit))
-            if has_ip_max_limit and single_account_result["count"] > ip_max_register_limit:
-                return False, response_dict['forbidden_ip_max'], 0
-        except Exception as e:
-            logger.error('db failed. ip: {}, error: {}'.format(ip, repr(e)))
-            return False, response_dict['server_error'], 0
-        return True, '', daily_result["count"]
+            address_max = limit_config["address_max"]
+            if address_max["enable"]:
+                cursor.execute(sql["addressCountQuery"].format(ip, today))
+                address_result = cursor.fetchone()
+                logger.debug('fetch result: {}, address_max: {}'.format(address_result, address_max))
+                if address_result["count"] > address_max["amount"]:
+                    return False, response_dict['forbidden_ip_max']
+            return True, ''
+    except Exception as e:
+        logger.error('db failed. ip_address: {}, error: {}'.format(ip, repr(e)))
+        return False, response_dict['server_error']
 
-def store_new_account(data):
-    with connection_pool(db_config).cursor() as cursor:
-        try:
+def save_new_account(data):
+    try:
+        with connection_pool(db_config).cursor() as cursor:
             create_time = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-            cursor.execute(sql['create_account'].format(data['id'], data['name'], data['active_key'], data['ip'], create_time, register))
-            # cursor.commit()
-        except Exception as e:
-            logger.error('execute create_account sql failed. data: {}, error: {}'.format(data, repr(e)))
+            cursor.execute(sql['createAccount'].format(data['id'], data['name'], data['active_key'],
+                data['address'], create_time, register["name"]))
+    except Exception as e:
+        logger.error('execute create_account sql failed. data: {}, error: {}'.format(data, repr(e)))
 
 def time_str_to_stamp(str_time):
     return int(time.mktime(time.strptime(str_time, "%Y-%m-%d %H:%M:%S")))
 
 def reward():
     while True:
-        with connection_pool(db_config).cursor() as cursor:
-            try:
+        try:
+            with connection_pool(db_config).cursor() as cursor:
                 today = datetime.datetime.utcnow().strftime('%Y-%m-%d')
-                query_sql = "SELECT COUNT(id) AS count FROM {} WHERE status={} AND DATE_FORMAT(create_time, '%Y-%m-%d')='{}'".format(
-                    tables['users'], g_reward_status["SUCCESS"], today)
-                # logger.debug(query_sql)
-                cursor.execute(query_sql)
-                core_asset_transfer_count = cursor.fetchone()["count"]
-                # core_asset_transfer_count = result["count"]
+                cursor.execute(sql["dailySuccessQuery"].format(g_reward_status["SUCCESS"], today))
+                fetch_result = cursor.fetchone()
+                daily_success_count = fetch_result["count"]
 
                 str_time = (datetime.datetime.utcnow()-datetime.timedelta(seconds=6)).strftime("%Y-%m-%d %H:%M:%S")
                 before_seconds_stamp = time_str_to_stamp(str_time)
-                query_sql = "SELECT account_id, name, status, create_time FROM {} WHERE status < {} AND register='{}' AND DATE_FORMAT(create_time, '%Y-%m-%d')='{}'".format(
-                    tables['users'], g_reward_retry_count, register, today)
-                # logger.debug(query_sql)
-                cursor.execute(query_sql)
-                results = cursor.fetchall()
-                # logger.debug(results)
-                for result in results:
-                    account_name = result["name"]
-                    status = result["status"]
-                    create_time_stamp = time_str_to_stamp(result["create_time"])
-                    account_info = get_account(account_name)
+                cursor.execute(sql["rewardQuery"].format(reward_failed_retry_times, register["name"], today))
+                accounts = cursor.fetchall()
+                for account in accounts:
+                    status = account["status"]
+                    old_account_id = account["account_id"]
+                    create_time_stamp = time_str_to_stamp(account["create_time"])
+                    account_info = get_account(account["name"])
                     if account_info and create_time_stamp < before_seconds_stamp:
-                        account_id = account_info["id"]
-                        reward_status = send_reward(core_asset_transfer_count, account_id, account_name)
-                        if account_id != result["account_id"]:
+                        reward_status = send_reward(daily_success_count, account_info["id"], account["name"])
+                        if reward_status:
+                            status = 4 #success
+                        else:
+                            status = status + 1 #failed +1
+                        cursor.execute(sql["statusUpdate"].format(status, account_info["id"], register["name"], account["name"]))
+
+                        if account_info["id"] != old_account_id:
                             logger.info('name: {}, status: {}, id: {} -> {}, reward_status: {}, create_time_stamp: {}, before seconds: {}'.format(
-                            account_name, status, result["account_id"], account_id, reward_status, create_time_stamp, before_seconds_stamp))
-                        if reward_status != -1:
-                            if reward_status == 0:
-                                status = 4 #success
-                            else:
-                                status = status + 1 #failed +1
-                            update_sql = "UPDATE {} SET STATUS='{}', account_id='{}' WHERE register='{}' AND name='{}' ".format(
-                                tables['users'], status, account_id, register, account_name)
-                            cursor.execute(update_sql)
-                            # cursor.commit()
-            except Exception as e:
-                logger.error('reward exception. {}'.format(repr(e)))
+                            account["name"], status, old_account_id, account_info["id"], reward_status, create_time_stamp, before_seconds_stamp))
+        except Exception as e:
+            logger.error('reward exception. {}'.format(repr(e)))
         time.sleep(5)
 
 class FaucetHandler(tornado.web.RequestHandler):
@@ -217,29 +206,30 @@ class FaucetHandler(tornado.web.RequestHandler):
             return self.write(response_dict['forbidden_no_auth'])
 
         #ip black check
-        remote_ip = self.request.remote_ip
-        real_ip = self.request.headers.get('X-Real-IP')
-        forwarded_ips  = self.request.headers.get('X-Forwarded-For')
-        ip_data = 'remote_ip: {}, real_ip: {}, forwarded-for: {}'.format(remote_ip, real_ip, forwarded_ips)
-        logger.info("request ip_data: {}, ip_limit_list: {}".format(ip_data, ip_limit_list))
-        if real_ip is None:
-            real_ip = remote_ip
-        if real_ip in ip_limit_list:
+        request_address = {
+            "remote": self.request.remote_ip,
+            "real": self.request.headers.get('X-Real-IP'),
+            "forwarded": self.request.headers.get('X-Forwarded-For')
+        }
+        logger.info("request address: {}".format(request_address))
+        real_address = request_address["real"]
+        if not real_address:
+            real_address = request_address["remote"]
+        if limit_config["blacklist"]["enable"] and real_address in limit_config["blacklist"]["ips"]:
             return self.write(response_dict['forbidden_no_auth'])
 
         # request params check
-        data = json.loads(self.request.body.decode("utf8"))
-        account = data.get("account")
-        status, msg, account_data = params_valid(account)
+        # request data format: {"account":{"name":"new-account-name","owner_key":"","active_key":""}}
+        request_data = json.loads(self.request.body.decode("utf8"))
+        request_account = request_data.get("account")
+        status, msg, account_data = request_params_check(request_account)
         if not status:
-            logger.error('status:{}, msg: {}, account_data: {}'.format(status, msg, account_data))
+            logger.warn('status:{}, msg: {}, account_data: {}'.format(status, msg, account_data))
             return self.write(msg)
 
         # check register count
-        today = datetime.datetime.utcnow().strftime('%Y-%m-%d')
-        status, msg, account_count = account_count_check(real_ip, today)
-        logger.info('[account_count_check] real_ip: {}, today: {}, status: {}, msg: {}, account_count: {}'.format(
-            real_ip, today, status, msg, account_count))
+        status, msg = register_check(real_address)
+        logger.info('[register_check] status: {}, msg: {}'.format(status, msg))
         if not status:
             return self.write(msg)
 
@@ -248,14 +238,16 @@ class FaucetHandler(tornado.web.RequestHandler):
         if not status:
             return self.write(msg)
 
-        #store new account data
+        #save db
         account_data['id'] = new_account_id
-        account_data['ip'] = real_ip
-        store_new_account(account_data)
+        account_data['address'] = real_address
+        save_new_account(account_data)
 
         #return
-        del account_data['ip']
-        return self.write(response_module(response_dict['ok']['code'], data={"account": account_data}, msg='Register successful! {}, {}'.format(account_data['name'], memo)))
+        del account_data['address']
+        message = response_module(response_dict['ok']['code'], data={"account": account_data}, msg='Register successful! {},\
+             {}'.format(account_data['name'], default_memo))
+        return self.write(message)
 
 def main():
     logger.info('-------------- faucet server start ----------------')

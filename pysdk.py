@@ -4,12 +4,12 @@ from PythonMiddleware.graphene import Graphene
 from PythonMiddleware.instance import set_shared_graphene_instance
 from PythonMiddleware.account import Account
 from PythonMiddleware.asset import Asset
-# from PythonMiddleware.storage import configStorage as config
+from PythonMiddleware.storage import configStorage
 
 from logger import logger
-from config import node_address
+from config import register, sdk_config
 
-gph = Graphene(node=node_address, blocking=True)
+gph = Graphene(node=sdk_config["node_address"], blocking=True)
 set_shared_graphene_instance(gph)
 
 def get_account(name):
@@ -18,10 +18,7 @@ def get_account(name):
         return account
     except Exception as e:
         error_msg = repr(e)
-        if repr(e).find("AccountDoesNotExistsException") != -1:
-            logger.info('name {}, error: {}'.format(name, repr(e)))
-        else:
-            logger.error('name {}, error: {}'.format(name, repr(e)))
+        logger.warn('name {}, error: {}'.format(name, repr(e)))
         return None
 
 def create_account(name, owner_key, active_key, memo_key, registrar):
@@ -49,7 +46,8 @@ def update_collateral_for_gas(from_account, beneficiary, collateral):
                 account=from_account)
         logger.debug(response)
     except Exception as e:
-        logger.error('beneficiary {}, collateral: {}, error: {}'.format(beneficiary, collateral, repr(e)))
+        logger.error('from:{}, beneficiary {}, collateral: {}, error: {}'.format(
+            from_account, beneficiary, collateral, repr(e)))
         return False
     return True
 
@@ -72,3 +70,27 @@ def get_asset(symbol):
     except Exception as e:
         logger.error('symbol {}, error: {}'.format(symbol, repr(e)))
         return None
+
+def init_wallet():
+    try:
+        if not gph.wallet.created():
+            gph.newWallet(sdk_config["wallet_password"])
+        logger.info("wallet create status: {}".format(gph.wallet.created()))
+
+        if gph.wallet.locked():
+            gph.wallet.unlock(sdk_config["wallet_password"])
+        logger.info("wallet lock status: {}".format(gph.wallet.locked()))
+
+        if gph.wallet.getPrivateKeyForPublicKey(register["public_key"]) is None:
+            logger.info("import private key into wallet. public key: {}".format(
+                register["public_key"]))
+            gph.wallet.addPrivateKey(register["private_key"])
+
+        logger.info("account id: {}, public key: {}".format(
+            gph.wallet.getAccountFromPublicKey(register["public_key"]),
+            register["public_key"]))
+
+        configStorage["default_prefix"] = gph.rpc.chain_params["prefix"]
+        configStorage["default_account"] = register["name"]
+    except Exception as e:
+        logger.error("init sdk wallet exception. {}".format(repr(e)))

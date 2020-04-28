@@ -52,4 +52,4 @@ class Logging(object):
         return self.logger
 
 
-logger = Logging(console=False, level=logging.DEBUG).getLogger()
+logger = Logging(console=False, level=logging.INFO).getLogger()
